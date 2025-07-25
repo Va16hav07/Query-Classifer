@@ -1,0 +1,102 @@
+{
+  "intents": {
+    "order_status": [
+      "order",
+      "track",
+      "status",
+      "tracking",
+      "shipment",
+      "delivery",
+      "package",
+      "shipping",
+      "dispatch",
+      "sent",
+      "progress",
+      "location"
+    ],
+    "pricing": [
+      "price",
+      "cost",
+      "charge",
+      "fee",
+      "expensive",
+      "cheap",
+      "money",
+      "dollar",
+      "payment",
+      "bill",
+      "amount",
+      "rate",
+      "quote"
+    ],
+    "availability": [
+      "available",
+      "stock",
+      "have",
+      "supply",
+      "inventory",
+      "sold",
+      "out",
+      "shortage",
+      "quantity",
+      "left",
+      "remaining",
+      "in stock"
+    ],
+    "delivery_issue": [
+      "delivery",
+      "failed",
+      "recipient",
+      "address",
+      "shipping",
+      "delayed",
+      "problem",
+      "issue",
+      "wrong",
+      "missing",
+      "damaged",
+      "lost"
+    ],
+    "card_missing": [
+      "card",
+      "note",
+      "message",
+      "missing",
+      "forgot",
+      "include",
+      "greeting",
+      "gift",
+      "thank",
+      "letter",
+      "envelope"
+    ],
+    "return_refund": [
+      "return",
+      "refund",
+      "exchange",
+      "replace",
+      "defective",
+      "warranty",
+      "money back",
+      "cancel",
+      "unwanted",
+      "wrong item"
+    ],
+    "customer_service": [
+      "help",
+      "support",
+      "contact",
+      "representative",
+      "agent",
+      "human",
+      "speak",
+      "talk",
+      "call",
+      "phone",
+      "email",
+      "chat"
+    ]
+  },
+  "vocab_type": "frequency",
+  "min_confidence_threshold": 0.1
+}
