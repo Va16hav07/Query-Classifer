@@ -17,6 +17,14 @@ import json
 from dataclasses import dataclass
 from collections import defaultdict
 import warnings
+import time
+
+# Sentence-BERT imports (optional)
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +37,7 @@ class ClassificationResult:
     intent: str
     confidence: float
     all_scores: Dict[str, float]
+    processing_time_ms: Optional[float] = None
 
 
 class VocabularyLoader:
@@ -192,6 +201,54 @@ class EmbeddingVectorizer:
         return np.mean(vectors, axis=0)
 
 
+class SentenceBERTVectorizer:
+    """Vectorizer using Sentence-BERT for semantic embeddings"""
+    
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        """
+        Initialize Sentence-BERT vectorizer
+        
+        Args:
+            model_name: Name of the sentence-transformer model
+        """
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError("Sentence-Transformers not available. Install with: pip install sentence-transformers")
+        
+        self.model_name = model_name
+        logger.info(f"Loading Sentence-BERT model: {model_name}")
+        
+        try:
+            self.model = SentenceTransformer(model_name)
+            self.embedding_dim = self.model.get_sentence_embedding_dimension()
+            logger.info(f"✓ Sentence-BERT model loaded. Embedding dimension: {self.embedding_dim}")
+        except Exception as e:
+            logger.error(f"Failed to load Sentence-BERT model: {e}")
+            raise
+    
+    def encode_text(self, text: str) -> np.ndarray:
+        """Encode text into embedding vector"""
+        try:
+            embedding = self.model.encode(text, convert_to_tensor=False)
+            return np.array(embedding)
+        except Exception as e:
+            logger.error(f"Error encoding text: {e}")
+            return np.zeros(self.embedding_dim)
+    
+    def encode_texts(self, texts: List[str]) -> np.ndarray:
+        """Encode multiple texts into embedding vectors"""
+        try:
+            embeddings = self.model.encode(texts, convert_to_tensor=False)
+            return np.array(embeddings)
+        except Exception as e:
+            logger.error(f"Error encoding texts: {e}")
+            return np.zeros((len(texts), self.embedding_dim))
+    
+    def compute_sentence_vector(self, words: List[str]) -> np.ndarray:
+        """Compute sentence vector from list of words (for compatibility)"""
+        text = " ".join(words)
+        return self.encode_text(text)
+
+
 class SimilarityCalculator:
     """Handles similarity calculations"""
     
@@ -239,24 +296,40 @@ class QueryClassifier:
     """Main query classifier class"""
     
     def __init__(self, 
-                 vocab_file: Union[str, Path],
+                 vocab_file: Union[str, Path] = None,
                  intents_config: Optional[Dict[str, List[str]]] = None,
                  vocab_type: str = "frequency",
-                 min_confidence_threshold: float = 0.0):
+                 min_confidence_threshold: float = 0.0,
+                 use_sentence_bert: bool = False,
+                 sentence_bert_model: str = "all-MiniLM-L6-v2",
+                 sentence_bert_labels: List[str] = None,
+                 sentence_bert_descriptions: Dict[str, str] = None):
         """
         Initialize the query classifier
         
         Args:
-            vocab_file: Path to vocabulary file
+            vocab_file: Path to vocabulary file (not used with Sentence-BERT)
             intents_config: Dictionary mapping intent names to keyword lists
-            vocab_type: Type of vocabulary file ("frequency" or "embedding")
+            vocab_type: Type of vocabulary file ("frequency", "embedding", or "sentence_bert")
             min_confidence_threshold: Minimum confidence threshold for classification
+            use_sentence_bert: Whether to use Sentence-BERT instead of TF-IDF
+            sentence_bert_model: Model name for Sentence-BERT
+            sentence_bert_labels: List of labels for Sentence-BERT classification
+            sentence_bert_descriptions: Label descriptions for better semantic matching
         """
-        self.vocab_file = Path(vocab_file)
+        self.vocab_file = Path(vocab_file) if vocab_file else None
         self.vocab_type = vocab_type.lower()
         self.min_confidence_threshold = min_confidence_threshold
+        self.use_sentence_bert = use_sentence_bert or vocab_type == "sentence_bert"
         
-        # Default intents configuration
+        # Sentence-BERT configuration
+        if self.use_sentence_bert:
+            from config import SENTENCE_BERT_CONFIG
+            self.sentence_bert_labels = sentence_bert_labels or SENTENCE_BERT_CONFIG["labels"]
+            self.sentence_bert_descriptions = sentence_bert_descriptions or SENTENCE_BERT_CONFIG["label_descriptions"]
+            self.sentence_bert_model = sentence_bert_model or SENTENCE_BERT_CONFIG["model_name"]
+        
+        # Default intents configuration (for TF-IDF mode)
         self.intents_config = intents_config or {
             "order_status": ["order", "track", "status", "tracking", "shipment", "delivery"],
             "pricing": ["price", "cost", "charge", "fee", "expensive", "cheap", "money"],
@@ -269,14 +342,21 @@ class QueryClassifier:
         self.preprocessor = TextPreprocessor()
         self.similarity_calculator = SimilarityCalculator()
         
-        # Load vocabulary and initialize vectorizer
-        self._load_vocabulary()
-        self._compute_intent_vectors()
+        if self.use_sentence_bert:
+            self._init_sentence_bert()
+        else:
+            # Load vocabulary and initialize vectorizer for TF-IDF mode
+            self._load_vocabulary()
+            self._compute_intent_vectors()
         
-        logger.info(f"Query classifier initialized with {len(self.intents_config)} intents")
+        logger.info(f"Query classifier initialized in {'Sentence-BERT' if self.use_sentence_bert else 'TF-IDF'} mode")
     
     def _load_vocabulary(self):
         """Load vocabulary based on type"""
+        if self.use_sentence_bert:
+            # Skip vocabulary loading for Sentence-BERT mode
+            return
+            
         if self.vocab_type == "frequency":
             self.vocab = VocabularyLoader.load_frequency_vocab(self.vocab_file)
             self.vectorizer = TFIDFVectorizer(self.vocab)
@@ -311,9 +391,76 @@ class QueryClassifier:
         Returns:
             ClassificationResult object with intent, confidence, and all scores
         """
+        start_time = time.time()
+        
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Query must be a non-empty string")
         
+        if self.use_sentence_bert:
+            return self._classify_with_sentence_bert(query, start_time)
+        else:
+            return self._classify_with_tfidf(query, start_time)
+    
+    def _classify_with_sentence_bert(self, query: str, start_time: float) -> ClassificationResult:
+        """Classify using Sentence-BERT"""
+        logger.debug(f"Classifying with Sentence-BERT: '{query}'")
+        
+        try:
+            # Encode the query using Sentence-BERT
+            query_embedding = self.vectorizer.encode_text(query)
+            
+            # Calculate cosine similarity with each label embedding
+            similarities = {}
+            for label, label_embedding in self.label_embeddings.items():
+                similarity = self.similarity_calculator.cosine_similarity(query_embedding, label_embedding)
+                similarities[label] = float(similarity)
+                logger.debug(f"Similarity with '{label}': {similarity:.4f}")
+            
+            # Find the best match
+            if not similarities:
+                logger.warning("No similarities computed")
+                return ClassificationResult(
+                    intent="unknown",
+                    confidence=0.0,
+                    all_scores={},
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            best_label = max(similarities, key=similarities.get)
+            best_confidence = similarities[best_label]
+            
+            # Always return the label with highest confidence (never "unknown")
+            predicted_label = best_label
+            
+            if best_confidence < self.min_confidence_threshold:
+                logger.info(f"Best confidence {best_confidence:.4f} below threshold {self.min_confidence_threshold}, but returning best match: {predicted_label}")
+            else:
+                logger.info(f"Best confidence {best_confidence:.4f} above threshold {self.min_confidence_threshold}")
+            
+            # Calculate processing time
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            logger.info(f"Query classified as '{predicted_label}' with confidence {best_confidence:.4f}")
+            
+            return ClassificationResult(
+                intent=predicted_label,
+                confidence=best_confidence,
+                all_scores=similarities,
+                processing_time_ms=processing_time_ms
+            )
+            
+        except Exception as e:
+            logger.error(f"Error during Sentence-BERT classification: {e}")
+            processing_time_ms = (time.time() - start_time) * 1000
+            return ClassificationResult(
+                intent="error",
+                confidence=0.0,
+                all_scores={},
+                processing_time_ms=processing_time_ms
+            )
+    
+    def _classify_with_tfidf(self, query: str, start_time: float) -> ClassificationResult:
+        """Classify using TF-IDF (original method)"""
         # Preprocess query
         query_words = self.preprocessor.preprocess(query)
         
@@ -322,7 +469,8 @@ class QueryClassifier:
             return ClassificationResult(
                 intent="unknown",
                 confidence=0.0,
-                all_scores={}
+                all_scores={},
+                processing_time_ms=(time.time() - start_time) * 1000
             )
         
         # Compute query vector
@@ -342,24 +490,24 @@ class QueryClassifier:
             return ClassificationResult(
                 intent="unknown",
                 confidence=0.0,
-                all_scores={}
+                all_scores={},
+                processing_time_ms=(time.time() - start_time) * 1000
             )
         
         best_intent = max(similarities, key=similarities.get)
         best_confidence = similarities[best_intent]
         
-        # Check confidence threshold
+        # Always return the intent with highest confidence (never "unknown")
+        predicted_intent = best_intent
+        
         if best_confidence < self.min_confidence_threshold:
-            return ClassificationResult(
-                intent="unknown",
-                confidence=best_confidence,
-                all_scores=similarities
-            )
+            logger.info(f"Best confidence {best_confidence:.4f} below threshold {self.min_confidence_threshold}, but returning best match: {predicted_intent}")
         
         return ClassificationResult(
-            intent=best_intent,
+            intent=predicted_intent,
             confidence=best_confidence,
-            all_scores=similarities
+            all_scores=similarities,
+            processing_time_ms=(time.time() - start_time) * 1000
         )
     
     def batch_classify(self, queries: List[str]) -> List[ClassificationResult]:
@@ -422,6 +570,30 @@ class QueryClassifier:
             vocab_type=config.get("vocab_type", "frequency"),
             min_confidence_threshold=config.get("min_confidence_threshold", 0.0)
         )
+    
+    def _init_sentence_bert(self):
+        """Initialize Sentence-BERT components"""
+        logger.info("Initializing Sentence-BERT mode")
+        
+        # Initialize Sentence-BERT vectorizer
+        self.vectorizer = SentenceBERTVectorizer(self.sentence_bert_model)
+        
+        # Precompute label embeddings
+        self.label_embeddings = {}
+        
+        for label in self.sentence_bert_labels:
+            if label in self.sentence_bert_descriptions:
+                # Use descriptive text for better semantic matching
+                text_to_encode = self.sentence_bert_descriptions[label]
+                logger.info(f"Encoding label '{label}' with description: '{text_to_encode}'")
+            else:
+                # Use label name directly
+                text_to_encode = label
+                logger.info(f"Encoding label '{label}' directly")
+            
+            embedding = self.vectorizer.encode_text(text_to_encode)
+            self.label_embeddings[label] = embedding
+            logger.debug(f"✓ Computed embedding for label '{label}'")
 
 
 def main():

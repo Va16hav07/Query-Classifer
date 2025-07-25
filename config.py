@@ -118,3 +118,15 @@ VALIDATION_CONFIG = {
     "random_state": 42,
     "stratify": True
 }
+
+# Sentence-BERT Configuration
+SENTENCE_BERT_CONFIG = {
+    "model_name": "all-MiniLM-L6-v2",
+    "labels": ["BACKEND_QUERY", "PRODUCT_QUERY"],
+    "label_descriptions": {
+        "BACKEND_QUERY": "Order related questions like delivery, payment, address changes",
+        "PRODUCT_QUERY": "Product related queries like availability, types, occasions"
+    },
+    "similarity_threshold": 0.1,
+    "use_label_descriptions": True  # Use descriptive text instead of just label names
+}

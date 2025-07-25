@@ -55,7 +55,13 @@ def initialize_classifier():
     global classifier, classifier_config
     
     try:
-        # Default configuration
+        # Check if we should use Sentence-BERT (from environment or config)
+        use_sentence_bert = os.getenv('USE_SENTENCE_BERT', 'false').lower() == 'true'
+        
+        if use_sentence_bert:
+            return initialize_sentence_bert_classifier()
+        
+        # Default TF-IDF configuration
         config = {
             "vocab_file": "/home/vaibhav/Qery Classifer/vocab.txt",
             "vocab_type": "frequency",
@@ -69,6 +75,10 @@ def initialize_classifier():
             with open(config_file, 'r') as f:
                 saved_config = json.load(f)
                 config.update(saved_config)
+                
+                # Check if config specifies Sentence-BERT
+                if saved_config.get("use_sentence_bert", False):
+                    return initialize_sentence_bert_classifier()
         
         classifier = QueryClassifier(
             vocab_file=config["vocab_file"],
@@ -83,6 +93,37 @@ def initialize_classifier():
         
     except Exception as e:
         logger.error(f"Failed to initialize classifier: {e}")
+        return False
+
+def initialize_sentence_bert_classifier():
+    """Initialize Sentence-BERT classifier"""
+    global classifier, classifier_config
+    
+    try:
+        from config import SENTENCE_BERT_CONFIG
+        
+        config = {
+            "use_sentence_bert": True,
+            "sentence_bert_model": SENTENCE_BERT_CONFIG["model_name"],
+            "sentence_bert_labels": SENTENCE_BERT_CONFIG["labels"],
+            "sentence_bert_descriptions": SENTENCE_BERT_CONFIG["label_descriptions"],
+            "min_confidence_threshold": SENTENCE_BERT_CONFIG["similarity_threshold"]
+        }
+        
+        classifier = QueryClassifier(
+            use_sentence_bert=True,
+            sentence_bert_model=config["sentence_bert_model"],
+            sentence_bert_labels=config["sentence_bert_labels"],
+            sentence_bert_descriptions=config["sentence_bert_descriptions"],
+            min_confidence_threshold=config["min_confidence_threshold"]
+        )
+        
+        classifier_config = config
+        logger.info("Sentence-BERT query classifier initialized successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize Sentence-BERT classifier: {e}")
         return False
 
 @app.before_request
@@ -139,7 +180,7 @@ def classify_query():
         if not data or 'query' not in data:
             return jsonify({
                 "error": "Missing 'query' field in request body"
-            }), 400
+            }, 400)
         
         query = data['query']
         include_all_scores = data.get('include_all_scores', False)
@@ -453,6 +494,84 @@ def web_interface():
             return f.read()
     except FileNotFoundError:
         return jsonify({'error': 'Web interface not found'}), 404
+
+@app.route('/switch_mode', methods=['POST'])
+def switch_classifier_mode():
+    """Switch between TF-IDF and Sentence-BERT modes"""
+    global classifier, classifier_config
+    
+    try:
+        if not request.is_json:
+            return jsonify({
+                "error": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        mode = data.get('mode', '').lower()
+        
+        if mode not in ['tfidf', 'sentence_bert']:
+            return jsonify({
+                "error": "Mode must be 'tfidf' or 'sentence_bert'"
+            }), 400
+        
+        # Initialize the requested classifier
+        old_mode = "sentence_bert" if classifier_config.get("use_sentence_bert", False) else "tfidf"
+        
+        if mode == 'sentence_bert':
+            success = initialize_sentence_bert_classifier()
+            new_mode = "sentence_bert"
+        else:
+            success = initialize_classifier()
+            new_mode = "tfidf"
+        
+        if not success:
+            return jsonify({
+                "error": f"Failed to initialize {mode} classifier"
+            }), 500
+        
+        return jsonify({
+            "message": f"Successfully switched from {old_mode} to {new_mode}",
+            "previous_mode": old_mode,
+            "current_mode": new_mode,
+            "config": classifier_config,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error switching classifier mode: {e}")
+        return jsonify({
+            "error": f"Internal server error: {str(e)}"
+        }), 500
+
+@app.route('/classifier_info', methods=['GET'])
+def get_classifier_info():
+    """Get information about the current classifier"""
+    try:
+        if classifier is None:
+            return jsonify({
+                "error": "Classifier not initialized"
+            }), 503
+        
+        info = {
+            "mode": "sentence_bert" if classifier_config.get("use_sentence_bert", False) else "tfidf",
+            "config": classifier_config,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Add mode-specific information
+        if hasattr(classifier, 'sentence_bert_labels'):
+            info["sentence_bert_labels"] = classifier.sentence_bert_labels
+            info["sentence_bert_descriptions"] = classifier.sentence_bert_descriptions
+        elif hasattr(classifier, 'intents_config'):
+            info["available_intents"] = list(classifier.intents_config.keys())
+        
+        return jsonify(info)
+        
+    except Exception as e:
+        logger.error(f"Error getting classifier info: {e}")
+        return jsonify({
+            "error": f"Internal server error: {str(e)}"
+        }), 500
 
 # Error handlers
 @app.errorhandler(404)

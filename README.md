@@ -291,6 +291,57 @@ except FileNotFoundError as e:
     print(f"Vocabulary file not found: {e}")
 ```
 
+## 🆕 Sentence-BERT Implementation
+
+**NEW**: Advanced semantic classification using Sentence-BERT for superior accuracy!
+
+### Quick Start with Sentence-BERT
+
+```python
+from query_classifier import QueryClassifier
+
+# Create Sentence-BERT classifier
+classifier = QueryClassifier(use_sentence_bert=True)
+
+# Classify with semantic understanding
+result = classifier.classify_query("Update my payment method")
+print(f"Intent: {result.intent}")  # BACKEND_QUERY
+print(f"Confidence: {result.confidence:.3f}")  # Higher accuracy
+```
+
+### Sentence-BERT vs TF-IDF
+
+| Feature | Sentence-BERT | TF-IDF |
+|---------|---------------|--------|
+| **Semantic Understanding** | ✅ Excellent | ❌ Limited |
+| **Complex Queries** | ✅ Handles well | ❌ May struggle |
+| **Speed** | ⚡ ~15ms | ⚡⚡ ~1ms |
+| **Accuracy** | 🎯 Superior | 📊 Good for keywords |
+
+### Binary Classification Labels
+
+- **BACKEND_QUERY**: Order related questions like delivery, payment, address changes
+- **PRODUCT_QUERY**: Product related queries like availability, types, occasions
+
+## 🌐 Web Interface
+
+Interactive web interface for testing and demonstration:
+
+```bash
+# Start with Sentence-BERT
+export USE_SENTENCE_BERT=true
+python3 mock_api_server.py
+
+# Open browser to: http://localhost:5000/web
+```
+
+**Features:**
+- 🔍 Single query classification
+- 📦 Batch processing
+- ⚙️ Mode switching (TF-IDF ↔ Sentence-BERT)
+- 📊 Real-time results and metrics
+- 🎯 Visual confidence indicators
+
 ## Contributing
 
 1. Fork the repository

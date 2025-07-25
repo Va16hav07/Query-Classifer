@@ -275,6 +275,13 @@
             <div class="card">
                 <h2>⚙️ Configuration</h2>
                 <div class="form-group">
+                    <label for="modeSelect">Classifier Mode:</label>
+                    <select id="modeSelect">
+                        <option value="tfidf">TF-IDF (Traditional)</option>
+                        <option value="sentence_bert">Sentence-BERT (Semantic)</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label for="domainSelect">Select Domain:</label>
                     <select id="domainSelect">
                         <option value="default">Default</option>
@@ -283,11 +290,15 @@
                         <option value="healthcare">Healthcare</option>
                     </select>
                 </div>
+                <button onclick="switchMode()" class="btn">Switch Mode</button>
                 <button onclick="changeDomain()" class="btn">Change Domain</button>
-                <button onclick="loadIntents()" class="btn">Refresh Intents</button>
+                <button onclick="loadClassifierInfo()" class="btn">Refresh Info</button>
                 
                 <div id="configInfo">
-                    <h4>Available Intents:</h4>
+                    <h4>Current Configuration:</h4>
+                    <div id="currentMode">Mode: -</div>
+                    <div id="currentDomain">Domain: -</div>
+                    <h4>Available Labels/Intents:</h4>
                     <div id="intentsList"></div>
                 </div>
             </div>
@@ -306,8 +317,8 @@
                             <div class="stat-label">Available Intents</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-number" id="currentDomain">-</div>
-                            <div class="stat-label">Current Domain</div>
+                            <div class="stat-number" id="currentMode">-</div>
+                            <div class="stat-label">Current Mode</div>
                         </div>
                     </div>
                 </div>
@@ -330,8 +341,7 @@
         // Initialize the interface
         document.addEventListener('DOMContentLoaded', function() {
             checkApiStatus();
-            loadConfiguration();
-            loadIntents();
+            loadClassifierInfo();
             
             // Set up form handlers
             document.getElementById('singleQueryForm').addEventListener('submit', handleSingleQuery);
@@ -360,36 +370,82 @@
             }
         }
 
-        // Load configuration
-        async function loadConfiguration() {
+        // Load classifier information (replaces loadConfiguration and loadIntents)
+        async function loadClassifierInfo() {
             try {
-                const response = await fetch(`${API_BASE_URL}/config`);
-                const config = await response.json();
+                const response = await fetch(`${API_BASE_URL}/classifier_info`);
+                const info = await response.json();
                 
-                document.getElementById('vocabSize').textContent = config.total_vocabulary_size || '-';
-                document.getElementById('intentCount').textContent = config.intents_count || '-';
+                // Update mode display
+                const mode = info.mode || 'unknown';
+                document.getElementById('currentMode').textContent = `Mode: ${mode}`;
+                document.getElementById('modeSelect').value = mode;
+                
+                // Update domain display  
+                const domain = info.config?.current_domain || 'default';
+                document.getElementById('currentDomain').textContent = `Domain: ${domain}`;
+                document.getElementById('domainSelect').value = domain;
+                
+                // Update intents/labels list
+                const intentsList = document.getElementById('intentsList');
+                if (mode === 'sentence_bert' && info.sentence_bert_labels) {
+                    // Show Sentence-BERT labels with descriptions
+                    let html = '';
+                    info.sentence_bert_labels.forEach(label => {
+                        const description = info.sentence_bert_descriptions?.[label] || 'No description';
+                        html += `
+                            <div style="margin: 8px 0; padding: 8px; border: 1px solid #e9ecef; border-radius: 4px;">
+                                <strong>${label}</strong><br>
+                                <small style="color: #666;">${description}</small>
+                            </div>
+                        `;
+                    });
+                    intentsList.innerHTML = html;
+                } else if (info.available_intents) {
+                    // Show traditional intents
+                    intentsList.innerHTML = info.available_intents.map(intent => 
+                        `<span style="display: inline-block; background: #e9ecef; padding: 4px 8px; margin: 2px; border-radius: 4px; font-size: 12px;">${intent}</span>`
+                    ).join('');
+                } else {
+                    intentsList.innerHTML = '<em>No information available</em>';
+                }
+                
+                // Update stats
+                if (info.config) {
+                    document.getElementById('vocabSize').textContent = info.config.total_vocabulary_size || '-';
+                    document.getElementById('intentCount').textContent = (info.sentence_bert_labels?.length || info.available_intents?.length || '-');
+                }
                 
             } catch (error) {
-                console.error('Failed to load configuration:', error);
+                console.error('Failed to load classifier info:', error);
+                showError('Failed to load classifier information');
             }
         }
 
-        // Load available intents
-        async function loadIntents() {
+        // Switch classifier mode
+        async function switchMode() {
+            const mode = document.getElementById('modeSelect').value;
+            
             try {
-                const response = await fetch(`${API_BASE_URL}/intents`);
-                const data = await response.json();
+                const response = await fetch(`${API_BASE_URL}/switch_mode`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ mode: mode })
+                });
                 
-                const intentsList = document.getElementById('intentsList');
-                intentsList.innerHTML = data.intents.map(intent => 
-                    `<span style="display: inline-block; background: #e9ecef; padding: 4px 8px; margin: 2px; border-radius: 4px; font-size: 12px;">${intent}</span>`
-                ).join('');
+                const result = await response.json();
                 
-                document.getElementById('currentDomain').textContent = data.current_config || 'default';
-                document.getElementById('domainSelect').value = data.current_config || 'default';
+                if (response.ok) {
+                    showSuccess(result.message);
+                    loadClassifierInfo();
+                } else {
+                    showError(result.error || 'Failed to switch mode');
+                }
                 
             } catch (error) {
-                console.error('Failed to load intents:', error);
+                showError('Network error: ' + error.message);
             }
         }
 
@@ -550,8 +606,7 @@
                 
                 if (response.ok) {
                     showSuccess(result.message);
-                    loadIntents();
-                    loadConfiguration();
+                    loadClassifierInfo();
                 } else {
                     showError(result.error || 'Failed to change domain');
                 }
