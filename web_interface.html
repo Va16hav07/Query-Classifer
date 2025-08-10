@@ -247,13 +247,25 @@
                     <div class="form-group">
                         <label for="singleQuery">Enter your query:</label>
                         <input type="text" id="singleQuery" placeholder="e.g., Where is my order?" required>
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="includeAllScores"> Include all confidence scores
-                        </label>
-                    </div>
-                    <button type="submit" class="btn">Classify Query</button>
+                    </div>                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="includeAllScores"> Include all confidence scores
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="detectMultiIntent" checked> Detect multi-intent queries
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label for="multiIntentThreshold">Multi-Intent Threshold:</label>
+                    <input type="range" id="multiIntentThreshold" min="0.05" max="0.30" step="0.01" value="0.08">
+                    <span id="thresholdValue">0.08</span>
+                    <small style="display: block; color: #666; margin-top: 5px;">
+                        Lower values = more sensitive to multi-intent detection
+                    </small>
+                </div>
+                <button type="submit" class="btn">Classify Query</button>
                 </form>
                 <div id="singleResult"></div>
             </div>
@@ -261,12 +273,16 @@
             <!-- Batch Classification -->
             <div class="card">
                 <h2>📦 Batch Classification</h2>
-                <form id="batchQueryForm">
-                    <div class="form-group">
-                        <label for="batchQueries">Enter multiple queries (one per line):</label>
-                        <textarea id="batchQueries" placeholder="Where is my order?&#10;How much does this cost?&#10;Is this item available?" required></textarea>
-                    </div>
-                    <button type="submit" class="btn">Classify Batch</button>
+                <form id="batchQueryForm">                <div class="form-group">
+                    <label for="batchQueries">Enter multiple queries (one per line):</label>
+                    <textarea id="batchQueries" placeholder="Where is my order?&#10;How much does this cost?&#10;Is this item available?" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="batchDetectMultiIntent" checked> Detect multi-intent in batch
+                    </label>
+                </div>
+                <button type="submit" class="btn">Classify Batch</button>
                 </form>
                 <div id="batchResult"></div>
             </div>
@@ -298,6 +314,7 @@
                     <h4>Current Configuration:</h4>
                     <div id="currentMode">Mode: -</div>
                     <div id="currentDomain">Domain: -</div>
+                    <div id="multiIntentInfo">Multi-Intent Threshold: -</div>
                     <h4>Available Labels/Intents:</h4>
                     <div id="intentsList"></div>
                 </div>
@@ -346,6 +363,14 @@
             // Set up form handlers
             document.getElementById('singleQueryForm').addEventListener('submit', handleSingleQuery);
             document.getElementById('batchQueryForm').addEventListener('submit', handleBatchQuery);
+            
+            // Set up threshold slider
+            const thresholdSlider = document.getElementById('multiIntentThreshold');
+            const thresholdValue = document.getElementById('thresholdValue');
+            
+            thresholdSlider.addEventListener('input', function() {
+                thresholdValue.textContent = thresholdSlider.value;
+            });
         });
 
         // Check API status
@@ -416,6 +441,16 @@
                     document.getElementById('intentCount').textContent = (info.sentence_bert_labels?.length || info.available_intents?.length || '-');
                 }
                 
+                // Update multi-intent threshold info
+                const multiThresholdInfo = document.getElementById('multiIntentInfo');
+                if (mode === 'sentence_bert') {
+                    const currentThreshold = document.getElementById('multiIntentThreshold').value;
+                    multiThresholdInfo.textContent = `Multi-Intent Threshold: ${currentThreshold}`;
+                    multiThresholdInfo.style.display = 'block';
+                } else {
+                    multiThresholdInfo.style.display = 'none';
+                }
+                
             } catch (error) {
                 console.error('Failed to load classifier info:', error);
                 showError('Failed to load classifier information');
@@ -455,6 +490,8 @@
             
             const query = document.getElementById('singleQuery').value;
             const includeAllScores = document.getElementById('includeAllScores').checked;
+            const detectMultiIntent = document.getElementById('detectMultiIntent').checked;
+            const multiIntentThreshold = parseFloat(document.getElementById('multiIntentThreshold').value);
             
             try {
                 const response = await fetch(`${API_BASE_URL}/classify`, {
@@ -464,7 +501,9 @@
                     },
                     body: JSON.stringify({
                         query: query,
-                        include_all_scores: includeAllScores
+                        include_all_scores: includeAllScores,
+                        detect_multi_intent: detectMultiIntent,
+                        multi_intent_threshold: multiIntentThreshold
                     })
                 });
                 
@@ -488,6 +527,8 @@
             
             const queriesText = document.getElementById('batchQueries').value;
             const queries = queriesText.split('\n').filter(q => q.trim());
+            const detectMultiIntent = document.getElementById('batchDetectMultiIntent').checked;
+            const multiIntentThreshold = parseFloat(document.getElementById('multiIntentThreshold').value);
             
             if (queries.length === 0) {
                 showError('Please enter at least one query');
@@ -502,7 +543,9 @@
                     },
                     body: JSON.stringify({
                         queries: queries,
-                        include_all_scores: false
+                        include_all_scores: false,
+                        detect_multi_intent: detectMultiIntent,
+                        multi_intent_threshold: multiIntentThreshold
                     })
                 });
                 
@@ -534,6 +577,16 @@
                     <small>Processing time: ${result.processing_time_ms}ms</small>
             `;
             
+            // Show multi-intent information if available
+            if (result.is_multi_intent && result.multi_intents && result.multi_intents.length > 1) {
+                html += `
+                    <div style="margin-top: 10px; padding: 8px; background: #e3f2fd; border-radius: 4px;">
+                        <strong>🎯 Multi-Intent Detected!</strong><br>
+                        <small>Intents: ${result.multi_intents.join(', ')}</small>
+                    </div>
+                `;
+            }
+            
             if (result.all_scores) {
                 html += '<h5>All Scores:</h5>';
                 for (const [intent, score] of Object.entries(result.all_scores)) {
@@ -559,8 +612,20 @@
                         <div class="confidence-bar">
                             <div class="confidence-fill" style="width: ${item.confidence * 100}%"></div>
                         </div>
-                    </div>
                 `;
+                
+                // Show multi-intent badge for batch results
+                if (item.is_multi_intent && item.multi_intents && item.multi_intents.length > 1) {
+                    html += `
+                        <div style="margin-top: 5px;">
+                            <span style="background: #e3f2fd; color: #1976d2; padding: 2px 6px; border-radius: 3px; font-size: 11px;">
+                                🎯 Multi-Intent
+                            </span>
+                        </div>
+                    `;
+                }
+                
+                html += '</div>';
             });
             
             if (result.results.length > 5) {

@@ -184,6 +184,8 @@ def classify_query():
         
         query = data['query']
         include_all_scores = data.get('include_all_scores', False)
+        detect_multi_intent = data.get('detect_multi_intent', True)
+        multi_intent_threshold = data.get('multi_intent_threshold', 0.08)
         
         if not isinstance(query, str) or not query.strip():
             return jsonify({
@@ -197,7 +199,15 @@ def classify_query():
             }), 503
         
         # Classify the query
-        result = classifier.classify_query(query)
+        if hasattr(classifier, 'classify_query') and 'detect_multi_intent' in str(classifier.classify_query.__code__.co_varnames):
+            # Sentence-BERT classifier with multi-intent support
+            result = classifier.classify_query(query, detect_multi_intent=detect_multi_intent)
+            # Update threshold if provided
+            if hasattr(classifier, 'multi_intent_threshold'):
+                classifier.multi_intent_threshold = multi_intent_threshold
+        else:
+            # Traditional TF-IDF classifier
+            result = classifier.classify_query(query)
         
         # Prepare response
         processing_time = (time.time() - start_time) * 1000
@@ -209,6 +219,11 @@ def classify_query():
             "processing_time_ms": round(processing_time, 2),
             "timestamp": datetime.now().isoformat()
         }
+        
+        # Add multi-intent information if available
+        if hasattr(result, 'is_multi_intent') and result.is_multi_intent:
+            response["is_multi_intent"] = result.is_multi_intent
+            response["multi_intents"] = result.multi_intents
         
         if include_all_scores:
             response["all_scores"] = {
@@ -270,6 +285,8 @@ def classify_batch():
         
         queries = data['queries']
         include_all_scores = data.get('include_all_scores', False)
+        detect_multi_intent = data.get('detect_multi_intent', True)
+        multi_intent_threshold = data.get('multi_intent_threshold', 0.08)
         
         if not isinstance(queries, list):
             return jsonify({
@@ -288,7 +305,15 @@ def classify_batch():
             }), 503
         
         # Classify all queries
-        results = classifier.batch_classify(queries)
+        if hasattr(classifier, 'batch_classify') and 'detect_multi_intent' in str(classifier.batch_classify.__code__.co_varnames):
+            # Sentence-BERT classifier with multi-intent support
+            # Update threshold if provided
+            if hasattr(classifier, 'multi_intent_threshold'):
+                classifier.multi_intent_threshold = multi_intent_threshold
+            results = classifier.batch_classify(queries, detect_multi_intent=detect_multi_intent)
+        else:
+            # Traditional TF-IDF classifier
+            results = classifier.batch_classify(queries)
         
         # Prepare response
         processing_time = (time.time() - start_time) * 1000
@@ -300,6 +325,11 @@ def classify_batch():
                 "intent": result.intent,
                 "confidence": round(result.confidence, 4)
             }
+            
+            # Add multi-intent information if available
+            if hasattr(result, 'is_multi_intent') and result.is_multi_intent:
+                result_data["is_multi_intent"] = result.is_multi_intent
+                result_data["multi_intents"] = result.multi_intents
             
             if include_all_scores:
                 result_data["all_scores"] = {

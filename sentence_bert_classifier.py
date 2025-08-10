@@ -11,9 +11,10 @@ Date: 2025-07-25
 
 import logging
 import numpy as np
+import re
 import time
-from typing import Dict, List, Optional, Union
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Sentence-BERT imports
@@ -40,6 +41,9 @@ class ClassificationResult:
     confidence: float
     all_scores: Dict[str, float]
     processing_time_ms: Optional[float] = None
+    is_multi_intent: bool = False
+    multi_intents: List[str] = field(default_factory=list)
+    multi_intent_threshold: float = 0.08  # Threshold for detecting multi-intent
 
 
 class SentenceBERTClassifier:
@@ -55,7 +59,8 @@ class SentenceBERTClassifier:
                  labels: List[str] = None,
                  label_descriptions: Dict[str, str] = None,
                  similarity_threshold: float = 0.1,
-                 use_label_descriptions: bool = True):
+                 use_label_descriptions: bool = True,
+                 multi_intent_threshold: float = 0.08):
         """
         Initialize the Sentence-BERT classifier
         
@@ -65,6 +70,7 @@ class SentenceBERTClassifier:
             label_descriptions: Mapping of labels to descriptive text
             similarity_threshold: Minimum similarity threshold for classification
             use_label_descriptions: Whether to use descriptions instead of label names
+            multi_intent_threshold: Threshold for detecting multiple intents (default: 0.08)
         """
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             raise ImportError("Sentence-Transformers not available. Install with: pip install sentence-transformers")
@@ -74,6 +80,7 @@ class SentenceBERTClassifier:
         self.label_descriptions = label_descriptions or SENTENCE_BERT_CONFIG["label_descriptions"]
         self.similarity_threshold = similarity_threshold or SENTENCE_BERT_CONFIG["similarity_threshold"]
         self.use_label_descriptions = use_label_descriptions
+        self.multi_intent_threshold = multi_intent_threshold
         
         logger.info(f"Initializing Sentence-BERT classifier with model: {model_name}")
         logger.info(f"Labels: {self.labels}")
@@ -136,7 +143,80 @@ class SentenceBERTClassifier:
         # Ensure result is in [-1, 1] range
         return np.clip(similarity, -1.0, 1.0)
     
-    def classify_query(self, query: str) -> ClassificationResult:
+    def _normalize_text(self, text: str) -> str:
+        """
+        Normalize text for better processing
+        
+        Handles irregular spacing, line breaks, and formatting issues
+        that can occur in batch processing or user input.
+        
+        Args:
+            text: Input text to normalize
+            
+        Returns:
+            Normalized text string
+        """
+        if not isinstance(text, str):
+            return ""
+        
+        # Remove extra whitespace and line breaks
+        normalized = re.sub(r'\s+', ' ', text.strip())
+        
+        # Remove any non-printable characters except common punctuation
+        normalized = re.sub(r'[^\w\s\.\,\?\!\:\;\-\(\)\[\]\'\"]+', ' ', normalized)
+        
+        # Final cleanup - remove extra spaces
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        
+        return normalized
+    
+    def _detect_multi_intent(self, similarities: Dict[str, float], multi_threshold: float = 0.08) -> Tuple[bool, List[str]]:
+        """
+        Detect if query contains multiple intents - IMPROVED VERSION
+        
+        Args:
+            similarities: Similarity scores for each label
+            multi_threshold: Minimum threshold for considering secondary intents
+            
+        Returns:
+            Tuple of (is_multi_intent, list_of_intents)
+        """
+        if not similarities or len(similarities) < 2:
+            return False, []
+        
+        # Sort similarities in descending order
+        sorted_scores = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+        
+        primary_intent = sorted_scores[0][0]
+        primary_score = sorted_scores[0][1]
+        
+        # More flexible multi-intent detection
+        multi_intents = [primary_intent]
+        
+        for label, score in sorted_scores[1:]:
+            # More relaxed conditions for multi-intent:
+            # 1. Secondary score must be above the threshold
+            # 2. OR if both scores are relatively close (within 0.15) and both positive
+            # 3. OR if secondary score is at least 30% of primary score
+            
+            condition1 = score >= multi_threshold
+            condition2 = (primary_score - score) <= 0.15 and score > 0.05
+            condition3 = score >= (primary_score * 0.3) and score > 0.05
+            
+            if condition1 or condition2 or condition3:
+                multi_intents.append(label)
+                logger.info(f"Multi-intent detected: {label} (score: {score:.4f}) - Primary: {primary_score:.4f}")
+        
+        is_multi = len(multi_intents) > 1
+        
+        if is_multi:
+            logger.info(f"Multi-intent query detected: {multi_intents}")
+        else:
+            logger.debug(f"Single intent detected. Scores: {dict(sorted_scores)}")
+        
+        return is_multi, multi_intents if is_multi else []
+    
+    def classify_query(self, query: str, detect_multi_intent: bool = True) -> ClassificationResult:
         """
         Classify a query using Sentence-BERT embeddings and cosine similarity
         
@@ -154,8 +234,12 @@ class SentenceBERTClassifier:
         logger.debug(f"Classifying query: '{query}'")
         
         try:
+            # Normalize the query text
+            normalized_query = self._normalize_text(query)
+            logger.debug(f"Normalized query: '{normalized_query}'")
+            
             # Encode the query using Sentence-BERT
-            query_embedding = self.model.encode(query, convert_to_tensor=False)
+            query_embedding = self.model.encode(normalized_query, convert_to_tensor=False)
             query_embedding = np.array(query_embedding)
             
             # Calculate cosine similarity with each label embedding
@@ -164,6 +248,9 @@ class SentenceBERTClassifier:
                 similarity = self._cosine_similarity(query_embedding, label_embedding)
                 similarities[label] = float(similarity)
                 logger.debug(f"Similarity with '{label}': {similarity:.4f}")
+            
+            # Detect multi-intent queries
+            is_multi_intent, multi_intents = self._detect_multi_intent(similarities, self.multi_intent_threshold)
             
             # Find the best match
             if not similarities:
@@ -178,8 +265,14 @@ class SentenceBERTClassifier:
             best_label = max(similarities, key=similarities.get)
             best_confidence = similarities[best_label]
             
-            # Always return the label with highest confidence (never "unknown")
-            predicted_label = best_label
+            # Handle multi-intent results
+            if is_multi_intent and multi_intents:
+                # For multi-intent, format the response appropriately
+                predicted_label = " + ".join(multi_intents)  # Combine multiple intents
+                logger.info(f"Multi-intent detected: {predicted_label}")
+            else:
+                # Always return the label with highest confidence (never "unknown")
+                predicted_label = best_label
             
             if best_confidence < self.similarity_threshold:
                 logger.info(f"Best confidence {best_confidence:.4f} below threshold {self.similarity_threshold}, but returning best match: {predicted_label}")
@@ -195,7 +288,9 @@ class SentenceBERTClassifier:
                 intent=predicted_label,
                 confidence=best_confidence,
                 all_scores=similarities,
-                processing_time_ms=processing_time_ms
+                processing_time_ms=processing_time_ms,
+                is_multi_intent=is_multi_intent,
+                multi_intents=multi_intents
             )
             
         except Exception as e:
@@ -208,12 +303,13 @@ class SentenceBERTClassifier:
                 processing_time_ms=processing_time_ms
             )
     
-    def batch_classify(self, queries: List[str]) -> List[ClassificationResult]:
+    def batch_classify(self, queries: List[str], detect_multi_intent: bool = True) -> List[ClassificationResult]:
         """
-        Classify multiple queries in batch
+        Classify multiple queries in batch with proper text normalization
         
         Args:
             queries: List of query strings
+            detect_multi_intent: Whether to detect multiple intents in queries
             
         Returns:
             List of ClassificationResult objects
@@ -223,7 +319,9 @@ class SentenceBERTClassifier:
         results = []
         for i, query in enumerate(queries):
             try:
-                result = self.classify_query(query)
+                # Normalize query before processing
+                normalized_query = self._normalize_text(query) if isinstance(query, str) else query
+                result = self.classify_query(normalized_query, detect_multi_intent=detect_multi_intent)
                 results.append(result)
                 logger.debug(f"Batch item {i+1}/{len(queries)}: '{query}' → {result.intent}")
             except Exception as e:
